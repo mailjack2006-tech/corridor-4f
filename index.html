@@ -1,0 +1,1269 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>4 樓無盡走廊：顯影</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Noto+Serif+TC:wght@400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #050607;
+      color: #d4d4d8;
+      font-family: 'Noto Serif TC', serif;
+    }
+
+    .font-mono-hud {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    #game-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+    }
+
+    /* Subtle film grain & vignette overlays */
+    .vignette-overlay {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: radial-gradient(circle at center, transparent 35%, rgba(0, 0, 0, 0.85) 100%);
+      z-index: 10;
+    }
+
+    /* Camera flash overlay (single realistic cold-white flash, NOT strobe) */
+    #flash-overlay {
+      position: fixed;
+      inset: 0;
+      background: #eef6ff;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 40;
+      transition: opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    /* Polaroid frame styling */
+    #polaroid-dock {
+      position: fixed;
+      right: 20px;
+      bottom: 92px;
+      z-index: 30;
+      transform: translateY(140%) rotate(3deg);
+      opacity: 0;
+      transition: transform 0.65s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.45s ease;
+      cursor: pointer;
+    }
+
+    #polaroid-dock.visible {
+      transform: translateY(0) rotate(-2deg);
+      opacity: 1;
+    }
+
+    #polaroid-dock.zoomed {
+      right: 50%;
+      bottom: 50%;
+      transform: translate(50%, 50%) scale(1.65) rotate(0deg);
+      z-index: 50;
+    }
+
+    @media (max-width: 640px) {
+      #polaroid-dock.zoomed {
+        transform: translate(50%, 50%) scale(1.25) rotate(0deg);
+      }
+    }
+
+    .polaroid-card {
+      background: #e8e6df;
+      padding: 10px 10px 30px 10px;
+      border-radius: 3px;
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.15);
+      width: 196px;
+    }
+
+    .polaroid-photo-wrap {
+      position: relative;
+      width: 176px;
+      height: 132px;
+      background: #070809;
+      overflow: hidden;
+      border: 1px solid rgba(0, 0, 0, 0.35);
+    }
+
+    #polaroid-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      filter: contrast(1.22) saturate(0.45) sepia(0.14);
+    }
+
+    /* Slow chemical development veil (2.5s) */
+    #polaroid-veil {
+      position: absolute;
+      inset: 0;
+      background: #060708;
+      opacity: 1;
+      transition: opacity 2.5s ease-in-out;
+      pointer-events: none;
+    }
+
+    /* Transition & feedback blackout curtain */
+    #curtain {
+      position: fixed;
+      inset: 0;
+      background: #020203;
+      z-index: 45;
+      opacity: 0;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      transition: opacity 0.65s ease;
+    }
+
+    #curtain.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    /* Touch/Mouse control buttons */
+    .ctrl-btn {
+      background: rgba(15, 18, 20, 0.52);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      backdrop-filter: blur(6px);
+      color: rgba(228, 228, 231, 0.85);
+      transition: background 0.15s ease, transform 0.1s ease, border-color 0.15s ease;
+    }
+    .ctrl-btn:active, .ctrl-btn.pressed {
+      background: rgba(255, 255, 255, 0.16);
+      border-color: rgba(255, 255, 255, 0.38);
+      transform: scale(0.96);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Main 3D Perspective Corridor Canvas -->
+  <canvas id="game-canvas"></canvas>
+  <div class="vignette-overlay"></div>
+  <div id="flash-overlay"></div>
+
+  <!-- Minimal Immersive HUD -->
+  <div id="hud" class="fixed inset-0 pointer-events-none z-20 hidden">
+    <!-- Top-Left: Loop Progress & Film Count -->
+    <div class="absolute top-5 left-5 sm:top-7 sm:left-7 flex flex-col gap-2">
+      <div class="flex items-center gap-4 text-xs sm:text-sm tracking-[0.18em] text-zinc-300/80 font-mono-hud">
+        <span id="hud-loop">循環：0 / 6</span>
+        <span class="text-zinc-600">|</span>
+        <span id="hud-film">底片：3 / 3</span>
+      </div>
+      <!-- Subtle Corridor Position Bar -->
+      <div class="flex items-center gap-2 text-[10px] font-mono-hud text-zinc-500 tracking-widest">
+        <span>退回</span>
+        <div class="w-28 sm:w-36 h-1 bg-zinc-800/80 rounded-full overflow-hidden">
+          <div id="hud-pos-bar" class="h-full bg-zinc-400/70 transition-all duration-75" style="width: 10%;"></div>
+        </div>
+        <span>電梯</span>
+      </div>
+    </div>
+
+    <!-- Top-Right: Mute Toggle & Subtle Hint -->
+    <div class="absolute top-5 right-5 sm:top-7 sm:right-7 flex items-center gap-3 pointer-events-auto">
+      <button id="mute-btn" type="button" class="ctrl-btn px-3 py-1.5 rounded-full text-[11px] font-mono-hud tracking-wider cursor-pointer">
+        音效：開
+      </button>
+    </div>
+
+    <!-- Bottom-Left: Subtle Touch / Mouse Movement Controls -->
+    <div class="absolute bottom-5 left-5 sm:bottom-7 sm:left-7 flex flex-col gap-2 pointer-events-auto">
+      <button id="btn-forward" type="button" class="ctrl-btn w-24 sm:w-28 py-2.5 rounded-xl text-xs font-mono-hud tracking-widest cursor-pointer">
+        ▲ 前進 [W]
+      </button>
+      <button id="btn-backward" type="button" class="ctrl-btn w-24 sm:w-28 py-2.5 rounded-xl text-xs font-mono-hud tracking-widest cursor-pointer">
+        ▼ 後退 [S]
+      </button>
+    </div>
+
+    <!-- Bottom-Right: Polaroid Camera Trigger -->
+    <div class="absolute bottom-5 right-5 sm:bottom-7 sm:right-7 pointer-events-auto flex flex-col items-end gap-2">
+      <button id="btn-camera" type="button" class="ctrl-btn px-4 py-3 rounded-xl text-xs font-mono-hud tracking-widest flex items-center gap-2 cursor-pointer">
+        <span class="w-2 h-2 rounded-full bg-emerald-400/80" id="camera-led"></span>
+        <span>拍立得 [Space]</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Slide-out Developing Polaroid Photo -->
+  <div id="polaroid-dock" title="點擊放大或收起相片">
+    <div class="polaroid-card">
+      <div class="polaroid-photo-wrap">
+        <canvas id="polaroid-canvas" width="352" height="264"></canvas>
+        <div id="polaroid-veil"></div>
+      </div>
+      <div class="mt-2.5 flex items-center justify-between text-[10px] font-mono-hud text-zinc-600 px-0.5">
+        <span id="polaroid-caption">4F // 顯影中...</span>
+        <span id="polaroid-zoom-hint">點擊放大</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Transition / Reset Curtain -->
+  <div id="curtain">
+    <p id="curtain-text" class="text-lg sm:text-2xl tracking-[0.25em] text-zinc-200/90 text-center px-6"></p>
+    <p id="curtain-sub" class="mt-3 text-xs font-mono-hud tracking-[0.22em] text-zinc-500 text-center px-6"></p>
+  </div>
+
+  <!-- Start Screen -->
+  <div id="start-screen" class="fixed inset-0 z-50 bg-[#050607] flex flex-col items-center justify-center px-6 text-center">
+    <div class="max-w-lg w-full">
+      <p class="font-mono-hud text-[11px] tracking-[0.35em] text-zinc-500 uppercase mb-4">FLOOR 04 // DEVELOPING</p>
+      <h1 class="text-3xl sm:text-5xl font-semibold tracking-[0.18em] text-zinc-100 mb-5">4 樓無盡走廊：顯影</h1>
+      <p class="text-sm sm:text-base text-zinc-400 leading-relaxed mb-8">
+        你被困在無盡循環的 4 樓長廊。有些異常肉眼清晰可見，但有些東西……唯有透過拍立得相片顯影後才會現身。
+      </p>
+
+      <div class="text-left bg-zinc-900/50 border border-zinc-800/80 rounded-2xl p-5 sm:p-6 mb-8 space-y-3 text-xs sm:text-sm text-zinc-300 leading-relaxed">
+        <div class="font-mono-hud text-[11px] text-zinc-500 tracking-[0.2em] mb-2">生存規則與操作</div>
+        <p><span class="text-zinc-100 font-semibold">移動視角：</span>按 <span class="font-mono-hud text-zinc-100">W / S</span>（或左下角按鈕）前進與後退，移動滑鼠控制手電筒。</p>
+        <p><span class="text-zinc-100 font-semibold">拍立得相機：</span>按 <span class="font-mono-hud text-zinc-100">空白鍵</span> 拍照（每層限拍 3 張）。相片需 2.5 秒緩慢顯影，點擊可放大檢視。</p>
+        <p><span class="text-zinc-100 font-semibold">判斷去留：</span>確認<span class="text-emerald-400/90">沒有異常</span>請走到盡頭電梯；若<span class="text-red-400/90">發現任何異常</span>請立刻退回起點。連續正確 6 次即可逃出。</p>
+      </div>
+
+      <button id="start-btn" type="button" class="px-9 py-3.5 rounded-full bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-sm tracking-[0.22em] transition-all cursor-pointer shadow-[0_0_30px_rgba(255,255,255,0.12)]">
+        進入 4 樓
+      </button>
+      <p class="mt-4 text-[11px] font-mono-hud text-zinc-600 tracking-wider">建議配戴耳機以獲得完整空間音效體驗</p>
+    </div>
+  </div>
+
+  <!-- Dawn Escape Ending Screen -->
+  <div id="ending-screen" class="fixed inset-0 z-50 hidden flex-col items-center justify-center px-6 text-center"
+       style="background: linear-gradient(180deg, #1b242c 0%, #3a4650 55%, #b8a790 100%);">
+    <div class="max-w-md w-full bg-black/35 backdrop-blur-md border border-white/15 rounded-3xl p-8 sm:p-10 shadow-2xl">
+      <p class="font-mono-hud text-[11px] tracking-[0.35em] text-amber-200/80 uppercase mb-3">06:12 AM // ESCAPED</p>
+      <h2 class="text-3xl sm:text-4xl font-semibold tracking-[0.18em] text-white mb-4">電梯門打開了</h2>
+      <p class="text-sm sm:text-base text-zinc-200/90 leading-relaxed mb-8">
+        清晨微涼的空氣湧入電梯，身後 4 樓的日光燈嗡鳴聲終於徹底消失。你成功離開了無盡走廊。
+      </p>
+
+      <div class="grid grid-cols-3 gap-3 mb-8 py-4 border-y border-white/15 font-mono-hud">
+        <div>
+          <div id="stat-loops" class="text-xl text-white font-bold">6</div>
+          <div class="text-[10px] text-zinc-300 mt-1">經歷循環</div>
+        </div>
+        <div>
+          <div id="stat-photos" class="text-xl text-white font-bold">0</div>
+          <div class="text-[10px] text-zinc-300 mt-1">拍攝底片</div>
+        </div>
+        <div>
+          <div id="stat-time" class="text-xl text-white font-bold">00:00</div>
+          <div class="text-[10px] text-zinc-300 mt-1">逃脫耗時</div>
+        </div>
+      </div>
+
+      <button id="replay-btn" type="button" class="px-8 py-3 rounded-full bg-white/90 hover:bg-white text-zinc-900 font-semibold text-xs sm:text-sm tracking-[0.2em] transition-all cursor-pointer">
+        再次進入 4 樓
+      </button>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      /* ============================================================
+         1. GAME STATE & ANOMALY DEFINITIONS
+         ============================================================ */
+      const ANOMALIES = [
+        // Photo-only anomalies (Invisible to naked eye, revealed ONLY in Polaroid)
+        'photo_figure',
+        'photo_writing',
+        'photo_404_peek',
+        'photo_elevator',
+        // Naked-eye subtle anomalies
+        'all_404',
+        'exit_sign',
+        'door_closing',
+        'dim_green',
+        // Auditory psychological anomaly
+        'delayed_steps'
+      ];
+
+      const state = {
+        started: false,
+        ended: false,
+        transitioning: false,
+        streak: 0,
+        totalLoops: 0,
+        totalPhotos: 0,
+        startTime: 0,
+        filmLeft: 3,
+        currentAnomaly: 'none',
+        lastAnomaly: 'none',
+
+        // Player spatial state in corridor (z: 0 = stairs behind, 10 = elevator ahead)
+        z: 1.2,
+        velZ: 0,
+        bobPhase: 0,
+        lastStepSide: 1,
+        wasMoving: false,
+        delayedStepsTriggered: false,
+
+        // Mouse / touch flashlight & look offset (-1 to 1)
+        aimX: 0,
+        aimY: 0,
+        smoothAimX: 0,
+        smoothAimY: 0,
+
+        // Input flags
+        keys: { forward: false, backward: false },
+
+        // Specific anomaly animation states
+        door404Open: 0,       // 0 = closed, 0.25 = ajar
+        door404Closing: false,
+        handOpacity: 0,
+
+        // Polaroid UI state
+        photoVisible: false,
+        photoZoomed: false,
+        cameraCooldownUntil: 0
+      };
+
+      /* ============================================================
+         2. WEB AUDIO API PROCEDURAL SPATIAL SOUND ENGINE
+         ============================================================ */
+      class CorridorAudio {
+        constructor() {
+          this.ctx = null;
+          this.muted = false;
+          this.master = null;
+          this.humGain = null;
+          this.humFilter = null;
+          this.noiseBuf = null;
+        }
+
+        init() {
+          if (this.ctx) {
+            if (this.ctx.state === 'suspended') this.ctx.resume();
+            return;
+          }
+          const AC = window.AudioContext || window.webkitAudioContext;
+          if (!AC) return;
+          this.ctx = new AC();
+
+          this.master = this.ctx.createGain();
+          this.master.gain.value = 0.7;
+          this.master.connect(this.ctx.destination);
+
+          // Shared white noise buffer
+          const len = this.ctx.sampleRate * 2;
+          this.noiseBuf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+          const ch = this.noiseBuf.getChannelData(0);
+          for (let i = 0; i < len; i++) ch[i] = Math.random() * 2 - 1;
+
+          // Continuous 60Hz fluorescent hum + low room tone
+          this.humGain = this.ctx.createGain();
+          this.humGain.gain.value = 0.045;
+
+          this.humFilter = this.ctx.createBiquadFilter();
+          this.humFilter.type = 'lowpass';
+          this.humFilter.frequency.value = 170;
+
+          const osc60 = this.ctx.createOscillator();
+          osc60.type = 'sawtooth';
+          osc60.frequency.value = 60;
+
+          const osc120 = this.ctx.createOscillator();
+          osc120.type = 'sine';
+          osc120.frequency.value = 120;
+
+          const g120 = this.ctx.createGain();
+          g120.gain.value = 0.35;
+
+          osc60.connect(this.humFilter);
+          osc120.connect(g120);
+          g120.connect(this.humFilter);
+          this.humFilter.connect(this.humGain);
+          this.humGain.connect(this.master);
+
+          osc60.start();
+          osc120.start();
+        }
+
+        setMuted(m) {
+          this.muted = m;
+          if (this.ctx && this.master) {
+            this.master.gain.setTargetAtTime(m ? 0.0001 : 0.7, this.ctx.currentTime, 0.08);
+          }
+        }
+
+        updateAmbience(isDimGreen, zProgress) {
+          if (!this.ctx || !this.humGain) return;
+          const now = this.ctx.currentTime;
+          const targetVol = isDimGreen ? (0.08 + zProgress * 0.08) : 0.04;
+          const targetFreq = isDimGreen ? (260 + zProgress * 180) : 165;
+          this.humGain.gain.setTargetAtTime(targetVol, now, 0.25);
+          this.humFilter.frequency.setTargetAtTime(targetFreq, now, 0.25);
+        }
+
+        // Spatial footstep (pan: -1 left to +1 right)
+        playFootstep(pan = 0, isPhantom = false) {
+          if (!this.ctx || this.muted) return;
+          const now = this.ctx.currentTime;
+
+          // Low thud
+          const osc = this.ctx.createOscillator();
+          const g = this.ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(isPhantom ? 95 : 115, now);
+          osc.frequency.exponentialRampToValueAtTime(32, now + (isPhantom ? 0.14 : 0.09));
+
+          g.gain.setValueAtTime(isPhantom ? 0.22 : 0.14, now);
+          g.gain.exponentialRampToValueAtTime(0.001, now + (isPhantom ? 0.18 : 0.11));
+
+          // Shoe scuff noise
+          const noise = this.ctx.createBufferSource();
+          noise.buffer = this.noiseBuf;
+          const bp = this.ctx.createBiquadFilter();
+          bp.type = 'bandpass';
+          bp.frequency.value = isPhantom ? 420 : 680;
+          bp.Q.value = 1.4;
+          const ng = this.ctx.createGain();
+          ng.gain.setValueAtTime(isPhantom ? 0.07 : 0.045, now);
+          ng.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+
+          const panner = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
+          if (panner) {
+            panner.pan.value = pan;
+            osc.connect(g); g.connect(panner);
+            noise.connect(bp); bp.connect(ng); ng.connect(panner);
+            panner.connect(this.master);
+          } else {
+            osc.connect(g); g.connect(this.master);
+            noise.connect(bp); bp.connect(ng); ng.connect(this.master);
+          }
+
+          osc.start(now);
+          osc.stop(now + 0.2);
+          noise.start(now);
+          noise.stop(now + 0.1);
+        }
+
+        // Polaroid shutter click + motor eject whir
+        playCameraShutter() {
+          if (!this.ctx || this.muted) return;
+          const now = this.ctx.currentTime;
+
+          // Crisp mechanical click
+          const click = this.ctx.createBufferSource();
+          click.buffer = this.noiseBuf;
+          const hp = this.ctx.createBiquadFilter();
+          hp.type = 'highpass';
+          hp.frequency.value = 1800;
+          const cg = this.ctx.createGain();
+          cg.gain.setValueAtTime(0.28, now);
+          cg.gain.exponentialRampToValueAtTime(0.001, now + 0.045);
+          click.connect(hp); hp.connect(cg); cg.connect(this.master);
+          click.start(now);
+          click.stop(now + 0.05);
+
+          // Film ejection motor whir (0.08s -> 0.85s)
+          const motor = this.ctx.createOscillator();
+          motor.type = 'sawtooth';
+          motor.frequency.setValueAtTime(190, now + 0.08);
+          motor.frequency.linearRampToValueAtTime(245, now + 0.25);
+          motor.frequency.linearRampToValueAtTime(215, now + 0.8);
+
+          const mbp = this.ctx.createBiquadFilter();
+          mbp.type = 'bandpass';
+          mbp.frequency.value = 520;
+          mbp.Q.value = 3.0;
+
+          const mg = this.ctx.createGain();
+          mg.gain.setValueAtTime(0.001, now + 0.08);
+          mg.gain.linearRampToValueAtTime(0.075, now + 0.14);
+          mg.gain.setValueAtTime(0.07, now + 0.72);
+          mg.gain.exponentialRampToValueAtTime(0.001, now + 0.88);
+
+          motor.connect(mbp); mbp.connect(mg); mg.connect(this.master);
+          motor.start(now + 0.08);
+          motor.stop(now + 0.9);
+        }
+
+        // Subtle heavy door thud on reset / door close
+        playDoorClose(vol = 0.22) {
+          if (!this.ctx || this.muted) return;
+          const now = this.ctx.currentTime;
+          const osc = this.ctx.createOscillator();
+          const g = this.ctx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(82, now);
+          osc.frequency.exponentialRampToValueAtTime(24, now + 0.26);
+          g.gain.setValueAtTime(vol, now);
+          g.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+          osc.connect(g); g.connect(this.master);
+          osc.start(now);
+          osc.stop(now + 0.35);
+        }
+
+        // Warm morning chord on Escape Ending
+        playDawnChord() {
+          if (!this.ctx || this.muted) return;
+          const now = this.ctx.currentTime;
+          if (this.humGain) this.humGain.gain.setTargetAtTime(0.0001, now, 0.5);
+          [261.63, 329.63, 392.0, 493.88].forEach((f, idx) => {
+            const o = this.ctx.createOscillator();
+            const g = this.ctx.createGain();
+            o.type = 'sine';
+            o.frequency.value = f;
+            g.gain.setValueAtTime(0.0001, now);
+            g.gain.linearRampToValueAtTime(0.07 / (idx * 0.25 + 1), now + 1.4);
+            g.gain.exponentialRampToValueAtTime(0.0001, now + 6.0);
+            o.connect(g); g.connect(this.master);
+            o.start(now);
+            o.stop(now + 6.2);
+          });
+        }
+      }
+
+      const audio = new CorridorAudio();
+
+      /* ============================================================
+         3. CANVAS SETUP & 3D PERSPECTIVE CORRIDOR RENDERER
+         ============================================================ */
+      const canvas = document.getElementById('game-canvas');
+      const ctx = canvas.getContext('2d');
+      const polaroidCanvas = document.getElementById('polaroid-canvas');
+      const pCtx = polaroidCanvas.getContext('2d');
+
+      function resizeCanvas() {
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.floor(window.innerWidth * dpr);
+        canvas.height = Math.floor(window.innerHeight * dpr);
+      }
+      window.addEventListener('resize', resizeCanvas);
+      resizeCanvas();
+
+      // Door definitions along corridor
+      const DOORS = [
+        { num: 401, side: -1, z: 2.2 },
+        { num: 402, side:  1, z: 2.2 },
+        { num: 403, side: -1, z: 5.0 },
+        { num: 404, side:  1, z: 5.0 },
+        { num: 405, side: -1, z: 7.8 },
+        { num: 406, side:  1, z: 7.8 }
+      ];
+
+      /**
+       * Renders the 3D perspective corridor onto any 2D canvas context.
+       * When `isPhoto === true`, reveals photo-only anomalies and applies Polaroid flash lighting.
+       */
+      function renderCorridor(targetCtx, w, h, options = {}) {
+        const isPhoto = Boolean(options.isPhoto);
+        const camZ = state.z;
+        const bobY = isPhoto ? 0 : Math.sin(state.bobPhase) * 0.032;
+        const bobX = isPhoto ? 0 : Math.cos(state.bobPhase * 0.5) * 0.015;
+
+        const vpX = w * 0.5 - state.smoothAimX * w * 0.14;
+        const vpY = h * 0.49 - state.smoothAimY * h * 0.10 + bobY * h * 0.25;
+        const focal = Math.min(w, h) * 0.72;
+
+        const halfW = 1.65;
+        const halfH = 1.25;
+        const endZ = 10.6; // Elevator wall
+
+        const proj = (x, y, worldZ) => {
+          const dz = Math.max(0.18, worldZ - camZ);
+          return {
+            sx: vpX + ((x - bobX) / dz) * focal,
+            sy: vpY + ((y - bobY) / dz) * focal,
+            dz
+          };
+        };
+
+        // Background
+        targetCtx.fillStyle = '#040506';
+        targetCtx.fillRect(0, 0, w, h);
+
+        // Lighting tone: dim_green anomaly shifts lights to sickly pale green
+        const isDimGreen = state.currentAnomaly === 'dim_green';
+        const zProg = Math.min(1, Math.max(0, camZ / 9.5));
+        const greenShift = isDimGreen ? (0.35 + zProg * 0.65) : 0;
+        const baseLight = isPhoto ? 0.92 : (isDimGreen ? (0.68 - zProg * 0.22) : 0.78);
+
+        // Draw corridor segments from far (endZ) to near (camZ + 0.2)
+        const segLen = 0.85;
+        const startSeg = Math.floor(endZ / segLen);
+
+        for (let i = startSeg; i >= 0; i--) {
+          const zFar = Math.min(endZ, (i + 1) * segLen);
+          const zNear = Math.max(camZ + 0.18, i * segLen);
+          if (zFar <= camZ + 0.2) continue;
+
+          const distFactor = Math.max(0.08, 1 - (zNear - camZ) / 11.2);
+          const shade = distFactor * baseLight;
+
+          const fl1 = proj(-halfW, halfH, zFar), fr1 = proj(halfW, halfH, zFar);
+          const cl1 = proj(-halfW, -halfH, zFar), cr1 = proj(halfW, -halfH, zFar);
+          const fl2 = proj(-halfW, halfH, zNear), fr2 = proj(halfW, halfH, zNear);
+          const cl2 = proj(-halfW, -halfH, zNear), cr2 = proj(halfW, -halfH, zNear);
+
+          // Floor tiles
+          const tileAlt = i % 2 === 0;
+          const fBase = (tileAlt ? 34 : 25) * shade;
+          targetCtx.fillStyle = `rgb(${Math.round(fBase * (1 - greenShift * 0.35))}, ${Math.round(fBase * (1 + greenShift * 0.22))}, ${Math.round(fBase * (1 - greenShift * 0.25))})`;
+          targetCtx.beginPath();
+          targetCtx.moveTo(fl1.sx, fl1.sy); targetCtx.lineTo(fr1.sx, fr1.sy);
+          targetCtx.lineTo(fr2.sx, fr2.sy); targetCtx.lineTo(fl2.sx, fl2.sy);
+          targetCtx.closePath();
+          targetCtx.fill();
+
+          // Ceiling
+          const cBase = 26 * shade;
+          targetCtx.fillStyle = `rgb(${Math.round(cBase * (1 - greenShift * 0.3))}, ${Math.round(cBase * (1 + greenShift * 0.28))}, ${Math.round(cBase * (1 - greenShift * 0.2))})`;
+          targetCtx.beginPath();
+          targetCtx.moveTo(cl1.sx, cl1.sy); targetCtx.lineTo(cr1.sx, cr1.sy);
+          targetCtx.lineTo(cr2.sx, cr2.sy); targetCtx.lineTo(cl2.sx, cl2.sy);
+          targetCtx.closePath();
+          targetCtx.fill();
+
+          // Left & Right Walls
+          const wBase = 56 * shade;
+          const wallColor = `rgb(${Math.round(wBase * (1 - greenShift * 0.32))}, ${Math.round(wBase * (1 + greenShift * 0.18))}, ${Math.round(wBase * (1 - greenShift * 0.22))})`;
+          targetCtx.fillStyle = wallColor;
+
+          // Left wall
+          targetCtx.beginPath();
+          targetCtx.moveTo(cl1.sx, cl1.sy); targetCtx.lineTo(fl1.sx, fl1.sy);
+          targetCtx.lineTo(fl2.sx, fl2.sy); targetCtx.lineTo(cl2.sx, cl2.sy);
+          targetCtx.closePath();
+          targetCtx.fill();
+
+          // Right wall
+          targetCtx.beginPath();
+          targetCtx.moveTo(cr1.sx, cr1.sy); targetCtx.lineTo(fr1.sx, fr1.sy);
+          targetCtx.lineTo(fr2.sx, fr2.sy); targetCtx.lineTo(cr2.sx, cr2.sy);
+          targetCtx.closePath();
+          targetCtx.fill();
+
+          // Subtle wall seam line
+          targetCtx.strokeStyle = `rgba(10, 12, 13, ${0.45 * shade})`;
+          targetCtx.lineWidth = Math.max(1, 1.5 / (zNear - camZ));
+          targetCtx.beginPath();
+          targetCtx.moveTo(cl2.sx, cl2.sy); targetCtx.lineTo(fl2.sx, fl2.sy);
+          targetCtx.lineTo(fr2.sx, fr2.sy); targetCtx.lineTo(cr2.sx, cr2.sy);
+          targetCtx.closePath();
+          targetCtx.stroke();
+        }
+
+        // Far End Wall & Elevator (z = endZ)
+        if (endZ > camZ + 0.3) {
+          const eTL = proj(-halfW, -halfH, endZ);
+          const eTR = proj(halfW, -halfH, endZ);
+          const eBL = proj(-halfW, halfH, endZ);
+          const eBR = proj(halfW, halfH, endZ);
+          const eShade = Math.max(0.12, 1 - (endZ - camZ) / 11.5) * baseLight;
+
+          targetCtx.fillStyle = `rgb(${Math.round(42 * eShade)}, ${Math.round(45 * eShade)}, ${Math.round(46 * eShade)})`;
+          targetCtx.beginPath();
+          targetCtx.moveTo(eTL.sx, eTL.sy); targetCtx.lineTo(eTR.sx, eTR.sy);
+          targetCtx.lineTo(eBR.sx, eBR.sy); targetCtx.lineTo(eBL.sx, eBL.sy);
+          targetCtx.closePath();
+          targetCtx.fill();
+
+          // Elevator Door Frame
+          const dTL = proj(-0.72, -0.78, endZ);
+          const dTR = proj(0.72, -0.78, endZ);
+          const dBL = proj(-0.72, halfH, endZ);
+          const dBR = proj(0.72, halfH, endZ);
+          const dW = dTR.sx - dTL.sx;
+          const dH = dBL.sy - dTL.sy;
+
+          // PHOTO-ONLY ANOMALY: photo_elevator (elevator open with bowed figure inside)
+          if (isPhoto && state.currentAnomaly === 'photo_elevator') {
+            targetCtx.fillStyle = '#050506';
+            targetCtx.fillRect(dTL.sx, dTL.sy, dW, dH);
+
+            // Bowed motionless figure inside elevator
+            const fx = (dTL.sx + dTR.sx) * 0.5;
+            const fyTop = dTL.sy + dH * 0.28;
+            targetCtx.fillStyle = '#121316';
+            targetCtx.beginPath();
+            targetCtx.ellipse(fx, fyTop + dH * 0.08, dW * 0.11, dH * 0.08, 0, 0, Math.PI * 2);
+            targetCtx.fill();
+            targetCtx.beginPath();
+            targetCtx.moveTo(fx - dW * 0.22, fyTop + dH * 0.18);
+            targetCtx.lineTo(fx + dW * 0.22, fyTop + dH * 0.18);
+            targetCtx.lineTo(fx + dW * 0.16, dBL.sy);
+            targetCtx.lineTo(fx - dW * 0.16, dBL.sy);
+            targetCtx.closePath();
+            targetCtx.fill();
+          } else {
+            // Closed brushed steel elevator doors
+            const mTone = Math.round(78 * eShade);
+            targetCtx.fillStyle = `rgb(${mTone}, ${mTone + 4}, ${mTone + 7})`;
+            targetCtx.fillRect(dTL.sx, dTL.sy, dW, dH);
+            // Center seam
+            targetCtx.strokeStyle = 'rgba(0,0,0,0.65)';
+            targetCtx.lineWidth = Math.max(1, dW * 0.015);
+            targetCtx.beginPath();
+            targetCtx.moveTo(dTL.sx + dW * 0.5, dTL.sy);
+            targetCtx.lineTo(dTL.sx + dW * 0.5, dBL.sy);
+            targetCtx.stroke();
+          }
+
+          // Elevator Floor Indicator "4"
+          const ind = proj(0, -0.96, endZ);
+          const indSize = Math.max(8, (dW * 0.14));
+          targetCtx.font = `bold ${indSize}px "JetBrains Mono", monospace`;
+          targetCtx.fillStyle = `rgba(220, 60, 50, ${Math.min(1, eShade * 1.4)})`;
+          targetCtx.textAlign = 'center';
+          targetCtx.fillText('4', ind.sx, ind.sy);
+        }
+
+        // Draw 6 Room Doors (401 - 406)
+        DOORS.forEach((door) => {
+          if (door.z <= camZ + 0.25) return;
+          const zNear = door.z - 0.36;
+          const zFar = door.z + 0.36;
+          const shade = Math.max(0.1, 1 - (door.z - camZ) / 11.0) * baseLight;
+
+          const xWall = door.side * halfW;
+          const t1 = proj(xWall, -0.68, zNear), b1 = proj(xWall, halfH, zNear);
+          const t2 = proj(xWall, -0.68, zFar), b2 = proj(xWall, halfH, zFar);
+
+          // Door recess / frame
+          targetCtx.fillStyle = `rgb(${Math.round(28 * shade)}, ${Math.round(24 * shade)}, ${Math.round(22 * shade)})`;
+          targetCtx.beginPath();
+          targetCtx.moveTo(t1.sx, t1.sy); targetCtx.lineTo(t2.sx, t2.sy);
+          targetCtx.lineTo(b2.sx, b2.sy); targetCtx.lineTo(b1.sx, b1.sy);
+          targetCtx.closePath();
+          targetCtx.fill();
+
+          // Special Door 404 states:
+          // 1) photo_404_peek (ONLY in Polaroid)
+          if (isPhoto && state.currentAnomaly === 'photo_404_peek' && door.num === 404) {
+            // Dark vertical gap on the near edge
+            const gapT = proj(xWall, -0.68, zNear + 0.16);
+            const gapB = proj(xWall, halfH, zNear + 0.16);
+            targetCtx.fillStyle = '#020203';
+            targetCtx.beginPath();
+            targetCtx.moveTo(t1.sx, t1.sy); targetCtx.lineTo(gapT.sx, gapT.sy);
+            targetCtx.lineTo(gapB.sx, gapB.sy); targetCtx.lineTo(b1.sx, b1.sy);
+            targetCtx.closePath();
+            targetCtx.fill();
+
+            // Pale eyes peering out from the dark crack
+            const eyeMid = proj(xWall, -0.18, zNear + 0.08);
+            const eR = Math.max(1.5, 4.5 / Math.max(0.8, door.z - camZ));
+            targetCtx.fillStyle = 'rgba(235, 240, 238, 0.92)';
+            targetCtx.beginPath();
+            targetCtx.arc(eyeMid.sx - eR * 1.4, eyeMid.sy, eR, 0, Math.PI * 2);
+            targetCtx.arc(eyeMid.sx + eR * 1.4, eyeMid.sy, eR, 0, Math.PI * 2);
+            targetCtx.fill();
+          }
+
+          // 2) door_closing (Naked-eye subtle anomaly on Door 404)
+          if (state.currentAnomaly === 'door_closing' && door.num === 404 && state.door404Open > 0.01) {
+            const gapZ = zNear + state.door404Open * 0.7;
+            const gapT = proj(xWall, -0.68, gapZ);
+            const gapB = proj(xWall, halfH, gapZ);
+            targetCtx.fillStyle = '#020203';
+            targetCtx.beginPath();
+            targetCtx.moveTo(t1.sx, t1.sy); targetCtx.lineTo(gapT.sx, gapT.sy);
+            targetCtx.lineTo(gapB.sx, gapB.sy); targetCtx.lineTo(b1.sx, b1.sy);
+            targetCtx.closePath();
+            targetCtx.fill();
+
+            // Pale hand quietly pulling the door shut
+            if (state.handOpacity > 0.02) {
+              const handPt = proj(xWall - 0.06, 0.08, gapZ);
+              const hr = Math.max(3, 15 / Math.max(0.8, door.z - camZ));
+              targetCtx.fillStyle = `rgba(218, 212, 206, ${state.handOpacity * shade * 1.3})`;
+              targetCtx.beginPath();
+              targetCtx.ellipse(handPt.sx, handPt.sy, hr * 0.55, hr * 0.85, -0.15, 0, Math.PI * 2);
+              targetCtx.fill();
+            }
+          }
+
+          // Door number plate
+          const plateNum = state.currentAnomaly === 'all_404' ? 404 : door.num;
+          const plate = proj(xWall - door.side * 0.02, -0.78, door.z);
+          const fSize = Math.max(7, Math.min(26, 22 / Math.max(0.6, door.z - camZ)));
+          targetCtx.font = `bold ${fSize}px "JetBrains Mono", monospace`;
+          targetCtx.fillStyle = `rgba(205, 208, 202, ${Math.min(0.95, shade * 1.25)})`;
+          targetCtx.textAlign = 'center';
+          targetCtx.fillText(String(plateNum), plate.sx, plate.sy);
+        });
+
+        // PHOTO-ONLY ANOMALY: photo_writing (dark red handwriting on walls)
+        if (isPhoto && state.currentAnomaly === 'photo_writing') {
+          const w1 = proj(-halfW + 0.03, -0.1, Math.min(endZ - 1.2, camZ + 2.8));
+          const w2 = proj(halfW - 0.03, 0.05, Math.min(endZ - 1.0, camZ + 3.6));
+          const sz1 = Math.max(12, 42 / Math.max(1, w1.dz));
+          const sz2 = Math.max(11, 38 / Math.max(1, w2.dz));
+
+          targetCtx.save();
+          targetCtx.font = `bold ${sz1}px "Noto Serif TC", serif`;
+          targetCtx.fillStyle = 'rgba(135, 18, 22, 0.88)';
+          targetCtx.textAlign = 'center';
+          targetCtx.fillText('不要往前走', w1.sx, w1.sy);
+
+          targetCtx.font = `bold ${sz2}px "Noto Serif TC", serif`;
+          targetCtx.fillText('回頭', w2.sx, w2.sy);
+          targetCtx.restore();
+        }
+
+        // Overhead Fluorescent Lights
+        [1.5, 3.8, 6.2, 8.5].forEach((lz) => {
+          if (lz <= camZ + 0.25) return;
+          const l1 = proj(-0.44, -halfH + 0.03, lz);
+          const l2 = proj(0.44, -halfH + 0.03, lz);
+          const lShade = Math.max(0.15, 1 - (lz - camZ) / 11.5);
+          targetCtx.strokeStyle = isDimGreen
+            ? `rgba(145, 225, 175, ${lShade * 0.85})`
+            : `rgba(225, 238, 232, ${lShade * 0.9})`;
+          targetCtx.lineWidth = Math.max(1.5, 6.5 / Math.max(0.6, lz - camZ));
+          targetCtx.shadowBlur = 16 * lShade;
+          targetCtx.shadowColor = isDimGreen ? 'rgba(90, 210, 140, 0.7)' : 'rgba(210, 235, 228, 0.6)';
+          targetCtx.beginPath();
+          targetCtx.moveTo(l1.sx, l1.sy);
+          targetCtx.lineTo(l2.sx, l2.sy);
+          targetCtx.stroke();
+          targetCtx.shadowBlur = 0;
+        });
+
+        // Hanging Green EXIT Sign (z = 5.4)
+        if (5.4 > camZ + 0.4) {
+          const signC = proj(0, -halfH + 0.24, 5.4);
+          const sw = Math.max(16, 78 / Math.max(0.6, 5.4 - camZ));
+          const sh = sw * 0.42;
+
+          targetCtx.fillStyle = '#0d4a2f';
+          targetCtx.fillRect(signC.sx - sw * 0.5, signC.sy - sh * 0.5, sw, sh);
+          targetCtx.strokeStyle = 'rgba(134, 239, 172, 0.55)';
+          targetCtx.lineWidth = 1;
+          targetCtx.strokeRect(signC.sx - sw * 0.5, signC.sy - sh * 0.5, sw, sh);
+
+          // Running figure vs Staring figure (exit_sign anomaly)
+          targetCtx.fillStyle = '#d1fae5';
+          const cx = signC.sx, cy = signC.sy;
+          if (state.currentAnomaly === 'exit_sign') {
+            // Standing still, facing straight at player with tiny dark eyes
+            targetCtx.beginPath();
+            targetCtx.arc(cx, cy - sh * 0.18, sh * 0.14, 0, Math.PI * 2);
+            targetCtx.fill();
+            targetCtx.fillRect(cx - sh * 0.11, cy - sh * 0.02, sh * 0.22, sh * 0.34);
+            // Tiny dark staring eyes
+            targetCtx.fillStyle = '#052e16';
+            const er = Math.max(0.8, sh * 0.032);
+            targetCtx.beginPath();
+            targetCtx.arc(cx - sh * 0.045, cy - sh * 0.19, er, 0, Math.PI * 2);
+            targetCtx.arc(cx + sh * 0.045, cy - sh * 0.19, er, 0, Math.PI * 2);
+            targetCtx.fill();
+          } else {
+            // Normal running stick figure + arrow
+            targetCtx.beginPath();
+            targetCtx.arc(cx - sw * 0.1, cy - sh * 0.18, sh * 0.12, 0, Math.PI * 2);
+            targetCtx.fill();
+            targetCtx.strokeStyle = '#d1fae5';
+            targetCtx.lineWidth = Math.max(1.2, sh * 0.08);
+            targetCtx.beginPath();
+            targetCtx.moveTo(cx - sw * 0.1, cy - sh * 0.06);
+            targetCtx.lineTo(cx - sw * 0.16, cy + sh * 0.22);
+            targetCtx.moveTo(cx - sw * 0.12, cy + sh * 0.05);
+            targetCtx.lineTo(cx + sw * 0.02, cy + sh * 0.22);
+            targetCtx.stroke();
+          }
+        }
+
+        // PHOTO-ONLY ANOMALY: photo_figure (tall blurred silhouette standing in corridor)
+        if (isPhoto && state.currentAnomaly === 'photo_figure') {
+          const figZ = Math.min(endZ - 0.8, camZ + 3.0);
+          const fHead = proj(0, -0.74, figZ);
+          const fFoot = proj(0, halfH, figZ);
+          const fh = Math.abs(fFoot.sy - fHead.sy);
+          const fw = fh * 0.25;
+
+          targetCtx.save();
+          targetCtx.fillStyle = 'rgba(8, 8, 10, 0.94)';
+          targetCtx.shadowBlur = 14;
+          targetCtx.shadowColor = 'rgba(0, 0, 0, 0.95)';
+          // Elongated head
+          targetCtx.beginPath();
+          targetCtx.ellipse(fHead.sx, fHead.sy + fh * 0.09, fw * 0.34, fh * 0.1, 0, 0, Math.PI * 2);
+          targetCtx.fill();
+          // Tall motionless torso
+          targetCtx.beginPath();
+          targetCtx.moveTo(fHead.sx - fw * 0.58, fHead.sy + fh * 0.21);
+          targetCtx.lineTo(fHead.sx + fw * 0.58, fHead.sy + fh * 0.21);
+          targetCtx.lineTo(fHead.sx + fw * 0.35, fFoot.sy);
+          targetCtx.lineTo(fHead.sx - fw * 0.35, fFoot.sy);
+          targetCtx.closePath();
+          targetCtx.fill();
+
+          // Faint pale eyes locked onto camera lens
+          const ey = fHead.sy + fh * 0.09;
+          const es = fw * 0.12;
+          targetCtx.fillStyle = 'rgba(220, 224, 222, 0.65)';
+          targetCtx.beginPath();
+          targetCtx.arc(fHead.sx - es, ey, Math.max(1.2, fh * 0.009), 0, Math.PI * 2);
+          targetCtx.arc(fHead.sx + es, ey, Math.max(1.2, fh * 0.009), 0, Math.PI * 2);
+          targetCtx.fill();
+          targetCtx.restore();
+        }
+
+        // Lighting Mask: Flashlight (Live) vs Cold Flash Falloff (Polaroid)
+        if (!isPhoto) {
+          const lx = w * 0.5 + state.smoothAimX * w * 0.34;
+          const ly = h * 0.5 + state.smoothAimY * h * 0.28;
+          const beamR = Math.min(w, h) * 0.52;
+          const grad = targetCtx.createRadialGradient(lx, ly, beamR * 0.08, lx, ly, beamR);
+          grad.addColorStop(0, 'rgba(0, 0, 0, 0.04)');
+          grad.addColorStop(0.55, 'rgba(0, 0, 0, 0.42)');
+          grad.addColorStop(1, 'rgba(0, 0, 0, 0.88)');
+          targetCtx.fillStyle = grad;
+          targetCtx.fillRect(0, 0, w, h);
+        } else {
+          // Polaroid camera flash falloff + subtle analog film grain
+          const fGrad = targetCtx.createRadialGradient(w * 0.5, h * 0.48, w * 0.1, w * 0.5, h * 0.5, w * 0.72);
+          fGrad.addColorStop(0, 'rgba(255, 255, 255, 0.08)');
+          fGrad.addColorStop(0.65, 'rgba(0, 0, 0, 0.18)');
+          fGrad.addColorStop(1, 'rgba(0, 0, 0, 0.76)');
+          targetCtx.fillStyle = fGrad;
+          targetCtx.fillRect(0, 0, w, h);
+
+          // Procedural static grain dots for authentic Polaroid texture
+          targetCtx.fillStyle = 'rgba(255,255,255,0.06)';
+          for (let g = 0; g < 650; g++) {
+            targetCtx.fillRect(Math.random() * w, Math.random() * h, 1.5, 1.5);
+          }
+        }
+      }
+
+      /* ============================================================
+         4. LOOP MANAGEMENT, POLAROID CAPTURE & DECISION LOGIC
+         ============================================================ */
+      const hudLoop = document.getElementById('hud-loop');
+      const hudFilm = document.getElementById('hud-film');
+      const hudPosBar = document.getElementById('hud-pos-bar');
+      const cameraLed = document.getElementById('camera-led');
+      const flashOverlay = document.getElementById('flash-overlay');
+      const polaroidDock = document.getElementById('polaroid-dock');
+      const polaroidVeil = document.getElementById('polaroid-veil');
+      const polaroidCaption = document.getElementById('polaroid-caption');
+      const curtain = document.getElementById('curtain');
+      const curtainText = document.getElementById('curtain-text');
+      const curtainSub = document.getElementById('curtain-sub');
+
+      function updateHUD() {
+        hudLoop.textContent = `循環：${state.streak} / 6`;
+        hudFilm.textContent = `底片：${state.filmLeft} / 3`;
+        hudPosBar.style.width = `${Math.round((state.z / 9.4) * 100)}%`;
+        cameraLed.className = state.filmLeft > 0
+          ? 'w-2 h-2 rounded-full bg-emerald-400/80'
+          : 'w-2 h-2 rounded-full bg-red-500/70';
+      }
+
+      function setupFloor() {
+        state.totalLoops++;
+        state.z = 1.2;
+        state.velZ = 0;
+        state.filmLeft = 3;
+        state.wasMoving = false;
+        state.delayedStepsTriggered = false;
+        state.door404Open = 0;
+        state.door404Closing = false;
+        state.handOpacity = 0;
+
+        // Hide previous Polaroid
+        state.photoVisible = false;
+        state.photoZoomed = false;
+        polaroidDock.classList.remove('visible', 'zoomed');
+
+        // 35% Normal, 65% Anomaly (avoid repeating the exact same anomaly back-to-back)
+        if (Math.random() < 0.35) {
+          state.currentAnomaly = 'none';
+        } else {
+          const pool = ANOMALIES.filter((a) => a !== state.lastAnomaly);
+          state.currentAnomaly = pool[Math.floor(Math.random() * pool.length)];
+        }
+        state.lastAnomaly = state.currentAnomaly;
+
+        if (state.currentAnomaly === 'door_closing') {
+          state.door404Open = 0.26;
+        }
+
+        updateHUD();
+      }
+
+      function takePolaroid() {
+        const now = performance.now();
+        if (!state.started || state.ended || state.transitioning) return;
+        if (state.filmLeft <= 0 || now < state.cameraCooldownUntil) return;
+
+        state.filmLeft--;
+        state.totalPhotos++;
+        state.cameraCooldownUntil = now + 1200;
+        updateHUD();
+
+        // Single realistic cold-white flash
+        flashOverlay.style.transition = 'none';
+        flashOverlay.style.opacity = '0.88';
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            flashOverlay.style.transition = 'opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1)';
+            flashOverlay.style.opacity = '0';
+          });
+        });
+
+        audio.playCameraShutter();
+
+        // Render the Polaroid snapshot (revealing photo-only anomalies!)
+        renderCorridor(pCtx, polaroidCanvas.width, polaroidCanvas.height, { isPhoto: true });
+
+        // Reset chemical veil to pitch black, then slowly develop over 2.5s
+        polaroidVeil.style.transition = 'none';
+        polaroidVeil.style.opacity = '1';
+        polaroidCaption.textContent = `4F // 顯影中...`;
+        polaroidDock.classList.remove('zoomed');
+        state.photoZoomed = false;
+        polaroidDock.classList.add('visible');
+        state.photoVisible = true;
+
+        setTimeout(() => {
+          polaroidVeil.style.transition = 'opacity 2.5s ease-in-out';
+          polaroidVeil.style.opacity = '0';
+        }, 120);
+
+        setTimeout(() => {
+          polaroidCaption.textContent = `4F // 循環 ${state.streak} · #${4 - state.filmLeft}`;
+        }, 2600);
+      }
+
+      function evaluateChoice(choseForward) {
+        if (state.transitioning) return;
+        state.transitioning = true;
+        state.keys.forward = false;
+        state.keys.backward = false;
+
+        const isNormal = state.currentAnomaly === 'none';
+        const isCorrect = (isNormal && choseForward) || (!isNormal && !choseForward);
+
+        if (isCorrect) {
+          state.streak++;
+          if (state.streak >= 6) {
+            triggerEnding();
+            return;
+          }
+          curtainText.textContent = choseForward ? '電梯門緩緩闔上……' : '你退回了逃生梯……';
+          curtainSub.textContent = `循環進度：${state.streak} / 6`;
+        } else {
+          state.streak = 0;
+          audio.playDoorClose(0.28);
+          curtainText.textContent = isNormal
+            ? '這層其實很安全……'
+            : '你漏看了什麼……';
+          curtainSub.textContent = '循環重置：0 / 6';
+        }
+
+        curtain.classList.add('active');
+        setTimeout(() => {
+          setupFloor();
+          setTimeout(() => {
+            curtain.classList.remove('active');
+            state.transitioning = false;
+          }, 350);
+        }, 1350);
+      }
+
+      function triggerEnding() {
+        state.ended = true;
+        audio.playDawnChord();
+        const elapsedSec = Math.floor((Date.now() - state.startTime) / 1000);
+        const mm = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
+        const ss = String(elapsedSec % 60).padStart(2, '0');
+
+        document.getElementById('stat-loops').textContent = String(state.totalLoops);
+        document.getElementById('stat-photos').textContent = String(state.totalPhotos);
+        document.getElementById('stat-time').textContent = `${mm}:${ss}`;
+
+        curtainText.textContent = '電梯停在了 1 樓。';
+        curtainSub.textContent = '06:12 AM';
+        curtain.classList.add('active');
+
+        setTimeout(() => {
+          document.getElementById('hud').classList.add('hidden');
+          polaroidDock.classList.remove('visible', 'zoomed');
+          document.getElementById('ending-screen').classList.remove('hidden');
+          document.getElementById('ending-screen').classList.add('flex');
+          curtain.classList.remove('active');
+        }, 1400);
+      }
+
+      /* ============================================================
+         5. INPUT HANDLERS (KEYBOARD, MOUSE, TOUCH)
+         ============================================================ */
+      window.addEventListener('keydown', (e) => {
+        if (!state.started || state.ended) return;
+        if (e.code === 'KeyW' || e.code === 'ArrowUp') state.keys.forward = true;
+        if (e.code === 'KeyS' || e.code === 'ArrowDown') state.keys.backward = true;
+        if (e.code === 'Space') {
+          e.preventDefault();
+          takePolaroid();
+        }
+      });
+
+      window.addEventListener('keyup', (e) => {
+        if (e.code === 'KeyW' || e.code === 'ArrowUp') state.keys.forward = false;
+        if (e.code === 'KeyS' || e.code === 'ArrowDown') state.keys.backward = false;
+      });
+
+      function updateAim(clientX, clientY) {
+        state.aimX = (clientX / Math.max(1, window.innerWidth) - 0.5) * 2;
+        state.aimY = (clientY / Math.max(1, window.innerHeight) - 0.5) * 2;
+      }
+
+      window.addEventListener('mousemove', (e) => updateAim(e.clientX, e.clientY));
+      window.addEventListener('touchmove', (e) => {
+        if (e.touches && e.touches[0]) updateAim(e.touches[0].clientX, e.touches[0].clientY);
+      }, { passive: true });
+
+      // Touch / Mouse movement buttons
+      function bindHoldButton(btnId, keyName) {
+        const el = document.getElementById(btnId);
+        const down = (e) => { e.preventDefault(); state.keys[keyName] = true; el.classList.add('pressed'); };
+        const up = () => { state.keys[keyName] = false; el.classList.remove('pressed'); };
+        el.addEventListener('mousedown', down);
+        el.addEventListener('touchstart', down, { passive: false });
+        window.addEventListener('mouseup', up);
+        window.addEventListener('touchend', up);
+      }
+      bindHoldButton('btn-forward', 'forward');
+      bindHoldButton('btn-backward', 'backward');
+
+      document.getElementById('btn-camera').addEventListener('click', takePolaroid);
+
+      // Click Polaroid to zoom / unzoom
+      polaroidDock.addEventListener('click', () => {
+        if (!state.photoVisible) return;
+        state.photoZoomed = !state.photoZoomed;
+        polaroidDock.classList.toggle('zoomed', state.photoZoomed);
+        document.getElementById('polaroid-zoom-hint').textContent = state.photoZoomed ? '點擊縮小' : '點擊放大';
+      });
+
+      // Mute toggle
+      const muteBtn = document.getElementById('mute-btn');
+      muteBtn.addEventListener('click', () => {
+        audio.setMuted(!audio.muted);
+        muteBtn.textContent = audio.muted ? '音效：關' : '音效：開';
+      });
+
+      // Start & Replay buttons
+      function startGame() {
+        audio.init();
+        state.started = true;
+        state.ended = false;
+        state.transitioning = false;
+        state.streak = 0;
+        state.totalLoops = 0;
+        state.totalPhotos = 0;
+        state.startTime = Date.now();
+        document.getElementById('start-screen').classList.add('hidden');
+        document.getElementById('ending-screen').classList.add('hidden');
+        document.getElementById('ending-screen').classList.remove('flex');
+        document.getElementById('hud').classList.remove('hidden');
+        setupFloor();
+      }
+
+      document.getElementById('start-btn').addEventListener('click', startGame);
+      document.getElementById('replay-btn').addEventListener('click', startGame);
+
+      /* ============================================================
+         6. MAIN 60FPS GAME LOOP
+         ============================================================ */
+      let lastTime = performance.now();
+
+      function gameLoop(now) {
+        const dt = Math.min(0.05, (now - lastTime) / 1000);
+        lastTime = now;
+
+        // Smooth flashlight & look interpolation
+        state.smoothAimX += (state.aimX - state.smoothAimX) * 0.1;
+        state.smoothAimY += (state.aimY - state.smoothAimY) * 0.1;
+
+        if (state.started && !state.ended && !state.transitioning) {
+          const moveDir = (state.keys.forward ? 1 : 0) - (state.keys.backward ? 1 : 0);
+          const isMoving = moveDir !== 0;
+
+          if (isMoving) {
+            state.z += moveDir * 2.15 * dt;
+            const prevPhase = state.bobPhase;
+            state.bobPhase += dt * 7.2;
+
+            // Trigger alternating L/R footstep at bottom of head-bob
+            if (Math.floor(prevPhase / Math.PI) !== Math.floor(state.bobPhase / Math.PI)) {
+              state.lastStepSide *= -1;
+              audio.playFootstep(state.lastStepSide * 0.25, false);
+            }
+          } else if (state.wasMoving && state.currentAnomaly === 'delayed_steps' && !state.delayedStepsTriggered && state.z > 2.2) {
+            // Auditory psychological anomaly: 2-3 heavy footsteps behind player after stopping
+            state.delayedStepsTriggered = true;
+            setTimeout(() => audio.playFootstep(-0.45, true), 380);
+            setTimeout(() => audio.playFootstep(0.45, true), 920);
+            setTimeout(() => audio.playFootstep(-0.3, true), 1480);
+          }
+          state.wasMoving = isMoving;
+
+          // Subtle naked-eye anomaly: Door 404 quietly pulled shut by a pale hand
+          if (state.currentAnomaly === 'door_closing' && !state.door404Closing && state.z > 2.6) {
+            state.door404Closing = true;
+          }
+          if (state.door404Closing && state.door404Open > 0) {
+            state.handOpacity = Math.min(1, state.handOpacity + dt * 2.5);
+            state.door404Open = Math.max(0, state.door404Open - dt * 0.14);
+            if (state.door404Open === 0) {
+              state.handOpacity = 0;
+              audio.playDoorClose(0.14);
+            }
+          }
+
+          // Update ambience sound
+          audio.updateAmbience(state.currentAnomaly === 'dim_green', state.z / 9.5);
+          updateHUD();
+
+          // Check Corridor Boundaries (Decision Triggers)
+          if (state.z >= 9.4) {
+            evaluateChoice(true);  // Reached Elevator -> Assume Normal
+          } else if (state.z <= 0.12) {
+            evaluateChoice(false); // Retreated to Stairs -> Detected Anomaly
+          }
+        }
+
+        // Render Live First-Person Corridor
+        renderCorridor(ctx, canvas.width, canvas.height, { isPhoto: false });
+
+        requestAnimationFrame(gameLoop);
+      }
+
+      requestAnimationFrame(gameLoop);
+    })();
+  </script>
+</body>
+</html>
